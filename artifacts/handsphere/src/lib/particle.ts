@@ -1,17 +1,20 @@
 /**
  * particle.ts
- * Creates and draws 100 glowing particles arranged in a small spherical
- * cluster around the clip-space origin, with slow per-particle float drift.
+ * Creates and draws 1000 glowing particles distributed in a spherical volume
+ * around the clip-space origin, with slow per-particle float drift.
  *
  * Design notes:
- *  - All 100 points are issued in ONE draw call: gl.drawArrays(gl.POINTS, 0, 100).
+ *  - All 1000 points are issued in ONE draw call: gl.drawArrays(gl.POINTS, 0, 1000).
  *  - Geometry lives in a single interleaved VBO: [x, y, z, phase] per vertex.
  *    Stride = 16 bytes (4 floats).  a_position at offset 0, a_phase at offset 12.
  *  - Positions are generated on the CPU once at init, then uploaded to the GPU.
- *  - Animation (the slow float drift) is computed entirely in the vertex shader
- *    via the u_time uniform — the VBO never changes after upload.
- *  - Additive blending (SRC_ALPHA, ONE) accumulates light, giving a natural
- *    cluster glow without alpha-sorting.
+ *  - Volume distribution: r = R * (MIN_FILL + (1−MIN_FILL) * ∛rand).
+ *    Cube-root sampling makes density uniform in volume while the MIN_FILL
+ *    floor keeps particles away from the very centre, preserving a visible
+ *    spherical shape and adding natural depth variation.
+ *  - Animation (slow float drift) is computed entirely in the vertex shader
+ *    via u_time — the VBO never changes after upload.
+ *  - Additive blending (SRC_ALPHA, ONE) accumulates light; no alpha sorting needed.
  */
 
 import { type AnyGL }                    from './webgl';
@@ -20,25 +23,25 @@ import { PARTICLE_VERT, PARTICLE_FRAG }  from './shaders';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PARTICLE_COUNT = 100;
+const PARTICLE_COUNT = 1000;
 
 // Point-sprite canvas size in pixels.
-// Core visible radius ≈ 6–8 px; the rest is soft halo.
-const SPRITE_SIZE = 48;
+// Smaller than the Phase-3 value because 10× more particles overlap more.
+const SPRITE_SIZE = 40;
 
-// Base sphere radius in NDC units (clip space ±1).
-// 0.14 ≈ a compact cluster — roughly 9 % of half-viewport width.
-const SPHERE_RADIUS = 0.14;
+// Outer sphere radius in NDC units.
+const SPHERE_RADIUS = 0.18;
 
-// Max random radial jitter added to each particle for an organic feel.
-const RADIUS_JITTER = 0.04;
+// Minimum fractional radius (0–1).  Particles live between MIN_FILL and 1.0
+// of SPHERE_RADIUS, giving a visible surface density with interior depth.
+const MIN_FILL = 0.30;
 
 // Floats per vertex in the interleaved VBO: x, y, z, phase.
 const FLOATS_PER_VERTEX = 4;
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
 
-/** Seeded pseudo-random using a simple LCG — deterministic across reloads. */
+/** Seeded LCG pseudo-random — deterministic across reloads. */
 function makePRNG(seed: number) {
   let s = seed;
   return () => {
@@ -48,26 +51,37 @@ function makePRNG(seed: number) {
 }
 
 /**
- * Generates `count` positions uniformly distributed on a sphere surface,
- * each with a small random radial jitter so the cluster looks organic.
+ * Generates `count` positions distributed uniformly inside a spherical volume.
+ *
+ * Direction: uniform on the sphere surface via the trig method.
+ *   theta = acos(2u − 1),  phi = 2π·v
+ *
+ * Radius: r = R · (MIN_FILL + (1 − MIN_FILL) · ∛rand)
+ *   ∛rand corrects the bias toward the centre that plain rand() would cause
+ *   (volume of a shell ∝ r², so the inverse CDF is the cube root).
+ *   MIN_FILL prevents particles collapsing into a dot at the origin.
+ *
  * Returns an interleaved Float32Array: [x, y, z, phase,  x, y, z, phase, …]
  */
 function buildCluster(count: number): Float32Array {
   const data = new Float32Array(count * FLOATS_PER_VERTEX);
-  const rand = makePRNG(42); // fixed seed → consistent look on every reload
+  const rand = makePRNG(42); // fixed seed → consistent appearance on reload
 
   for (let i = 0; i < count; i++) {
-    // Uniform sampling on the sphere surface (Marsaglia / trig method).
+    // ── Direction (uniform on sphere surface) ───────────────────────────
     const u     = rand();
     const v     = rand();
-    const theta = Math.acos(2 * u - 1); // polar   angle [0, π]
-    const phi   = 2 * Math.PI * v;      // azimuth angle [0, 2π]
-    const r     = SPHERE_RADIUS + (rand() * 2 - 1) * RADIUS_JITTER;
+    const theta = Math.acos(2 * u - 1);      // polar angle
+    const phi   = 2 * Math.PI * v;           // azimuth angle
+
+    // ── Radius (uniform volume, floored at MIN_FILL) ────────────────────
+    const t = rand();
+    const r = SPHERE_RADIUS * (MIN_FILL + (1 - MIN_FILL) * Math.cbrt(t));
 
     const base = i * FLOATS_PER_VERTEX;
     data[base    ] = Math.sin(theta) * Math.cos(phi) * r; // x
-    data[base + 1] = Math.sin(theta) * Math.sin(phi) * r; // y
-    data[base + 2] = Math.cos(theta)                 * r; // z
+    data[base + 1] = Math.sin(theta) * Math.sin(phi) * r; // y  (depth on screen)
+    data[base + 2] = Math.cos(theta)                 * r; // z  (left–right tilt)
     data[base + 3] = rand() * Math.PI * 2;                // phase [0, 2π]
   }
 
@@ -91,7 +105,7 @@ export interface ParticleRenderer {
  * Returns null if any GPU resource creation fails.
  */
 export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
-  const gl2 = gl as WebGL2RenderingContext; // we confirmed WebGL2 at init
+  const gl2 = gl as WebGL2RenderingContext;
 
   // ── Shader program ────────────────────────────────────────────────────────
   const program = createProgram(gl, PARTICLE_VERT, PARTICLE_FRAG);
@@ -102,7 +116,7 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   const aPhase    = gl.getAttribLocation(program, 'a_phase');
 
   if (aPosition < 0 || aPhase < 0) {
-    console.error('[particle] One or more attribute locations not found — check shader source.');
+    console.error('[particle] Attribute location not found — check shader source.');
     gl.deleteProgram(program);
     return null;
   }
@@ -118,7 +132,7 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   if (!vbo) { gl.deleteProgram(program); return null; }
 
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-  gl.bufferData(gl.ARRAY_BUFFER, clusterData, gl.STATIC_DRAW); // never changes
+  gl.bufferData(gl.ARRAY_BUFFER, clusterData, gl.STATIC_DRAW); // upload once, never update
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
   // ── VAO — attribute layout ────────────────────────────────────────────────
@@ -130,11 +144,11 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
 
   const stride = FLOATS_PER_VERTEX * Float32Array.BYTES_PER_ELEMENT; // 16 bytes
 
-  // a_position: 3 floats, offset 0
+  // a_position: 3 floats starting at byte 0
   gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(aPosition);
 
-  // a_phase: 1 float, offset 12 bytes (after x, y, z)
+  // a_phase: 1 float starting at byte 12
   const phaseOffset = 3 * Float32Array.BYTES_PER_ELEMENT;
   gl.vertexAttribPointer(aPhase, 1, gl.FLOAT, false, stride, phaseOffset);
   gl.enableVertexAttribArray(aPhase);
@@ -143,8 +157,8 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   gl2.bindVertexArray(null);
 
   // ── Blending ──────────────────────────────────────────────────────────────
-  // Additive blending accumulates light from overlapping particles.
-  // Works correctly on a near-black background without alpha sorting.
+  // Additive: each fragment adds its brightness to the framebuffer.
+  // Overlapping halos accumulate into a natural bloom without sorting.
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
@@ -157,7 +171,7 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
 
     gl2.bindVertexArray(vao);
 
-    // Single draw call — all 100 particles, all geometry already on the GPU.
+    // Single draw call — all 1000 particles, all geometry on the GPU.
     gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
 
     gl2.bindVertexArray(null);
