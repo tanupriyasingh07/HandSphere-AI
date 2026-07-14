@@ -94,7 +94,7 @@ function buildCluster(count: number): Float32Array {
 
 export interface ParticleRenderer {
   /** Draw one frame. Call every rAF tick after clearFrame(). */
-  draw(timeSeconds: number, offsetX: number, offsetY: number): void;
+  draw(timeSeconds: number, offsetX: number, offsetY: number, tilt: number): void;
   /** Release all GPU resources. Call on unmount or context loss. */
   dispose(): void;
 }
@@ -128,6 +128,7 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   const uPointSize = getUniform(gl, program, 'u_pointSize');
   const uRotation  = getUniform(gl, program, 'u_rotation');
   const uOffset    = getUniform(gl, program, 'u_offset');
+  const uTilt      = getUniform(gl, program, 'u_tilt');
 
   // ── VBO — interleaved cluster geometry ───────────────────────────────────
   const clusterData = buildCluster(PARTICLE_COUNT);
@@ -165,13 +166,14 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
   // ── Draw ──────────────────────────────────────────────────────────────────
-  function draw(timeSeconds: number, offsetX: number, offsetY: number): void {
+  function draw(timeSeconds: number, offsetX: number, offsetY: number, tilt: number): void {
     gl.useProgram(program);
 
     if (uTime)      gl.uniform1f(uTime,      timeSeconds);
     if (uPointSize) gl.uniform1f(uPointSize, SPRITE_SIZE);
     if (uRotation)  gl.uniform1f(uRotation,  timeSeconds * ROTATION_SPEED);
     if (uOffset)    gl.uniform2f(uOffset,    offsetX, offsetY);
+    if (uTilt)      gl.uniform1f(uTilt,      tilt);
 
     gl2.bindVertexArray(vao);
     gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT); // single draw call

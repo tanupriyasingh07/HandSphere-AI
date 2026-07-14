@@ -19,6 +19,7 @@ uniform float u_time;      // elapsed seconds — drives position drift
 uniform float u_pointSize; // base sprite size in pixels (scaled by perspective)
 uniform float u_rotation;  // Y-axis rotation angle in radians (slow auto-spin)
 uniform vec2  u_offset;    // screen-space translation for palm following [−1, 1]
+uniform float u_tilt;      // Z-axis roll driven by palm orientation (radians)
 
 // Passed to fragment shader so back particles can be dimmed.
 out float v_depth;
@@ -37,6 +38,16 @@ void main() {
   pos.x += cos(u_time * 0.38 + a_phase)        * 0.009;
   pos.y += sin(u_time * 0.51 + a_phase)        * 0.013;
   pos.z += sin(u_time * 0.29 + a_phase * 1.37) * 0.007;
+
+  // ── Z-axis tilt (palm roll) ──────────────────────────────────────────────
+  // Applied first so the auto-spin runs in the already-tilted frame.
+  float cosT = cos(u_tilt);
+  float sinT = sin(u_tilt);
+  vec3 tilted;
+  tilted.x = pos.x * cosT - pos.y * sinT;
+  tilted.y = pos.x * sinT + pos.y * cosT;
+  tilted.z = pos.z;
+  pos = tilted;
 
   // ── Y-axis rotation ─────────────────────────────────────────────────────
   float cosR = cos(u_rotation);

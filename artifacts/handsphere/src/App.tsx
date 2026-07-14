@@ -37,6 +37,8 @@ export default function App() {
   const resultsRef  = useRef<Results | null>(null);     // latest MP results
   const palmTargetRef   = useRef({ x: 0, y: 0 }); // raw palm NDC target from MP
   const sphereOffsetRef = useRef({ x: 0, y: 0 }); // lerped sphere position
+  const tiltTargetRef   = useRef(0);               // raw tilt angle from LM5–LM17 (rad)
+  const sphereTiltRef   = useRef(0);               // lerped tilt angle
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [fps,       setFps]       = useState(0);
@@ -124,11 +126,12 @@ export default function App() {
       const off = sphereOffsetRef.current;
       off.x += (tgt.x - off.x) * LERP_K;
       off.y += (tgt.y - off.y) * LERP_K;
+      sphereTiltRef.current += (tiltTargetRef.current - sphereTiltRef.current) * LERP_K;
 
       // ── WebGL: clear + particles ─────────────────────────────────────
       if (glRef.current) {
         clearFrame(glRef.current);
-        particleRef.current?.draw(timeSec, off.x, off.y);
+        particleRef.current?.draw(timeSec, off.x, off.y, sphereTiltRef.current);
       }
 
       // ── MediaPipe: send frame (non-blocking, rate-limited by sendingRef)
@@ -213,8 +216,19 @@ export default function App() {
             // x: mirror to match CSS scaleX(-1) video, map [0,1] → NDC [-1,1]
             // y: flip because MP y=0 is top but NDC y=+1 is top
             palmTargetRef.current = { x: 1 - 2 * raw, y: 1 - 2 * ray };
+
+            // Tilt: angle of the LM17 → LM5 knuckle line from horizontal.
+            // |dx| removes left-vs-right ambiguity; result is in [−π/2, π/2].
+            // tdy = lm17.y − lm5.y: positive when LM5 is higher on screen
+            // (MP y = 0 at top), so positive tilt → index-up = CCW roll.
+            const lm5  = lm[5];
+            const lm17 = lm[17];
+            const tdx  = Math.abs(lm5.x - lm17.x);
+            const tdy  = lm17.y - lm5.y;
+            tiltTargetRef.current = Math.atan2(tdy, tdx);
           } else {
             palmTargetRef.current = { x: 0, y: 0 };
+            tiltTargetRef.current = 0;
           }
         });
         handsRef.current = tracker;
