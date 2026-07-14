@@ -26,8 +26,9 @@ import { PARTICLE_VERT, PARTICLE_FRAG }  from './shaders';
 const PARTICLE_COUNT = 1000;
 
 // Point-sprite canvas size in pixels.
-// Smaller than the Phase-3 value because 10× more particles overlap more.
-const SPRITE_SIZE = 40;
+// Must be small enough that 1000 additive halos don't merge into a blob.
+// 14 px gives a visible core (~2 px) plus a contained glow ring.
+const SPRITE_SIZE = 14;
 
 // Outer sphere radius in NDC units.
 const SPHERE_RADIUS = 0.18;

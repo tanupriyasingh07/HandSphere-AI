@@ -48,16 +48,17 @@ void main() {
   // Discard fragments outside the unit circle (square → circle clip).
   if (dist > 1.0) discard;
 
-  // Tight bright core — falls off very quickly.
-  float core = exp(-dist * dist * 14.0);
+  // Tight bright core — very steep falloff so the dot stays small.
+  float core = exp(-dist * dist * 22.0);
 
-  // Wide soft halo — gentle falloff for the glow bloom.
-  float halo = exp(-dist * dist * 2.8) * 0.55;
+  // Narrow dim halo — contained within the sprite, won't bleed into neighbours.
+  // With 1000 additive particles the halo coefficient must stay very low.
+  float halo = exp(-dist * dist * 7.0) * 0.07;
 
   float brightness = core + halo;
 
-  // Subtle sinusoidal pulse shared across all particles (±15 %, ~3.5 s period).
-  float pulse = 0.85 + 0.15 * sin(u_time * 1.8);
+  // Very subtle pulse — small amplitude so dim particles don't disappear.
+  float pulse = 0.92 + 0.08 * sin(u_time * 1.8);
   brightness *= pulse;
 
   // Premultiplied-alpha: colour = alpha = brightness.
