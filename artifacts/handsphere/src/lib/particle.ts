@@ -1,20 +1,20 @@
 /**
  * particle.ts
- * Creates and draws 1000 glowing particles distributed in a spherical volume
- * around the clip-space origin, with slow per-particle float drift.
+ * Creates and draws 3000 glowing particles distributed in a spherical volume
+ * around the clip-space origin, with slow Y-axis rotation and per-particle drift.
  *
  * Design notes:
- *  - All 1000 points are issued in ONE draw call: gl.drawArrays(gl.POINTS, 0, 1000).
+ *  - All 3000 points are issued in ONE draw call: gl.drawArrays(gl.POINTS, 0, 3000).
  *  - Geometry lives in a single interleaved VBO: [x, y, z, phase] per vertex.
  *    Stride = 16 bytes (4 floats).  a_position at offset 0, a_phase at offset 12.
  *  - Positions are generated on the CPU once at init, then uploaded to the GPU.
- *  - Volume distribution: r = R * (MIN_FILL + (1−MIN_FILL) * ∛rand).
- *    Cube-root sampling makes density uniform in volume while the MIN_FILL
- *    floor keeps particles away from the very centre, preserving a visible
- *    spherical shape and adding natural depth variation.
- *  - Animation (slow float drift) is computed entirely in the vertex shader
- *    via u_time — the VBO never changes after upload.
- *  - Additive blending (SRC_ALPHA, ONE) accumulates light; no alpha sorting needed.
+ *  - Volume distribution: r = R · (MIN_FILL + (1−MIN_FILL) · ∛rand).
+ *    Cube-root sampling gives uniform density in 3D volume.
+ *  - Y-axis auto-rotation is applied in the vertex shader via u_rotation uniform;
+ *    depth-based brightness shading is handled in the fragment shader via v_depth.
+ *  - Animation (slow float drift + rotation) is computed entirely in the vertex
+ *    shader — the VBO never changes after upload.
+ *  - Additive blending (SRC_ALPHA, ONE) accumulates light naturally.
  */
 
 import { type AnyGL }                    from './webgl';
@@ -23,22 +23,24 @@ import { PARTICLE_VERT, PARTICLE_FRAG }  from './shaders';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PARTICLE_COUNT = 1000;
+const PARTICLE_COUNT = 3000;
 
-// Point-sprite canvas size in pixels.
-// Must be small enough that 1000 additive halos don't merge into a blob.
-// 14 px gives a visible core (~2 px) plus a contained glow ring.
+// Point-sprite size in pixels — calibrated so individual particles stay
+// distinct even at 3000 density with additive blending.
 const SPRITE_SIZE = 14;
 
 // Outer sphere radius in NDC units.
-const SPHERE_RADIUS = 0.18;
+const SPHERE_RADIUS = 0.20;
 
-// Minimum fractional radius (0–1).  Particles live between MIN_FILL and 1.0
-// of SPHERE_RADIUS, giving a visible surface density with interior depth.
-const MIN_FILL = 0.30;
+// Minimum fractional radius. Particles live between MIN_FILL·R and R,
+// preserving a visible spherical shell with interior depth variation.
+const MIN_FILL = 0.25;
 
 // Floats per vertex in the interleaved VBO: x, y, z, phase.
 const FLOATS_PER_VERTEX = 4;
+
+// Auto-rotation speed in radians per second (one full turn ≈ 25 s).
+const ROTATION_SPEED = (2 * Math.PI) / 25;
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -52,15 +54,14 @@ function makePRNG(seed: number) {
 }
 
 /**
- * Generates `count` positions distributed uniformly inside a spherical volume.
+ * Generates `count` positions uniformly distributed inside a spherical volume.
  *
- * Direction: uniform on the sphere surface via the trig method.
+ * Direction — uniform on sphere surface (trig method, no pole bias):
  *   theta = acos(2u − 1),  phi = 2π·v
  *
- * Radius: r = R · (MIN_FILL + (1 − MIN_FILL) · ∛rand)
- *   ∛rand corrects the bias toward the centre that plain rand() would cause
- *   (volume of a shell ∝ r², so the inverse CDF is the cube root).
- *   MIN_FILL prevents particles collapsing into a dot at the origin.
+ * Radius — uniform volume with interior floor:
+ *   r = R · (MIN_FILL + (1 − MIN_FILL) · ∛rand)
+ *   ∛rand is the inverse CDF for a uniform 3D radial distribution.
  *
  * Returns an interleaved Float32Array: [x, y, z, phase,  x, y, z, phase, …]
  */
@@ -69,20 +70,20 @@ function buildCluster(count: number): Float32Array {
   const rand = makePRNG(42); // fixed seed → consistent appearance on reload
 
   for (let i = 0; i < count; i++) {
-    // ── Direction (uniform on sphere surface) ───────────────────────────
+    // Direction
     const u     = rand();
     const v     = rand();
-    const theta = Math.acos(2 * u - 1);      // polar angle
-    const phi   = 2 * Math.PI * v;           // azimuth angle
+    const theta = Math.acos(2 * u - 1);
+    const phi   = 2 * Math.PI * v;
 
-    // ── Radius (uniform volume, floored at MIN_FILL) ────────────────────
+    // Radius
     const t = rand();
     const r = SPHERE_RADIUS * (MIN_FILL + (1 - MIN_FILL) * Math.cbrt(t));
 
     const base = i * FLOATS_PER_VERTEX;
     data[base    ] = Math.sin(theta) * Math.cos(phi) * r; // x
-    data[base + 1] = Math.sin(theta) * Math.sin(phi) * r; // y  (depth on screen)
-    data[base + 2] = Math.cos(theta)                 * r; // z  (left–right tilt)
+    data[base + 1] = Math.sin(theta) * Math.sin(phi) * r; // y
+    data[base + 2] = Math.cos(theta)                 * r; // z
     data[base + 3] = rand() * Math.PI * 2;                // phase [0, 2π]
   }
 
@@ -125,6 +126,7 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   // ── Uniform locations ─────────────────────────────────────────────────────
   const uTime      = getUniform(gl, program, 'u_time');
   const uPointSize = getUniform(gl, program, 'u_pointSize');
+  const uRotation  = getUniform(gl, program, 'u_rotation');
 
   // ── VBO — interleaved cluster geometry ───────────────────────────────────
   const clusterData = buildCluster(PARTICLE_COUNT);
@@ -145,11 +147,11 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
 
   const stride = FLOATS_PER_VERTEX * Float32Array.BYTES_PER_ELEMENT; // 16 bytes
 
-  // a_position: 3 floats starting at byte 0
+  // a_position: 3 floats at byte offset 0
   gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(aPosition);
 
-  // a_phase: 1 float starting at byte 12
+  // a_phase: 1 float at byte offset 12
   const phaseOffset = 3 * Float32Array.BYTES_PER_ELEMENT;
   gl.vertexAttribPointer(aPhase, 1, gl.FLOAT, false, stride, phaseOffset);
   gl.enableVertexAttribArray(aPhase);
@@ -158,8 +160,6 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   gl2.bindVertexArray(null);
 
   // ── Blending ──────────────────────────────────────────────────────────────
-  // Additive: each fragment adds its brightness to the framebuffer.
-  // Overlapping halos accumulate into a natural bloom without sorting.
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
@@ -169,13 +169,12 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
 
     if (uTime)      gl.uniform1f(uTime,      timeSeconds);
     if (uPointSize) gl.uniform1f(uPointSize, SPRITE_SIZE);
+    if (uRotation)  gl.uniform1f(uRotation,  timeSeconds * ROTATION_SPEED);
 
     gl2.bindVertexArray(vao);
-
-    // Single draw call — all 1000 particles, all geometry on the GPU.
-    gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
-
+    gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT); // single draw call
     gl2.bindVertexArray(null);
+
     gl.useProgram(null);
   }
 
