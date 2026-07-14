@@ -2,16 +2,18 @@
  * App.tsx
  * Root component. Owns the fullscreen canvas, WebGL context lifecycle,
  * animation loop, FPS counter, and HUD overlays.
- * Phase 1: WebGL clear-only renderer — no draw calls yet.
+ * Phase 2: single glowing particle rendered via the shader pipeline.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { initWebGL, setViewport, clearFrame, type AnyGL } from '@/lib/webgl';
+import { createParticleRenderer, type ParticleRenderer } from '@/lib/particle';
 
 export default function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const glRef     = useRef<AnyGL | null>(null);
-  const rafRef    = useRef<number>(0);
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const glRef      = useRef<AnyGL | null>(null);
+  const rafRef     = useRef<number>(0);
+  const particleRef = useRef<ParticleRenderer | null>(null);
 
   const [fps,        setFps]        = useState(0);
   const [glVersion,  setGLVersion]  = useState<string>('');
@@ -29,6 +31,9 @@ export default function App() {
     }
     glRef.current = state.gl;
     setGLVersion(`WebGL${state.version}`);
+
+    // ── Particle renderer ─────────────────────────────────────────────────
+    particleRef.current = createParticleRenderer(state.gl);
 
     // ── Resize handler ────────────────────────────────────────────────────
     const resize = () => {
@@ -54,7 +59,8 @@ export default function App() {
       console.info('[WebGL] Context restored — reinitialising.');
       const restored = initWebGL(canvas);
       if (restored) {
-        glRef.current = restored.gl;
+        glRef.current     = restored.gl;
+        particleRef.current = createParticleRenderer(restored.gl);
         resize();
         startLoop();
       }
@@ -64,13 +70,15 @@ export default function App() {
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
     // ── Animation loop ────────────────────────────────────────────────────
-    let lastTime    = performance.now();
+    const startTime = performance.now(); // t=0 for u_time uniform
+    let lastTime    = startTime;
     let frameCount  = 0;
     let fpsAccum    = 0; // accumulated ms since last FPS sample
 
     const loop = (now: number) => {
-      const delta  = now - lastTime;
-      lastTime     = now;
+      const delta      = now - lastTime;
+      lastTime         = now;
+      const timeSec    = (now - startTime) / 1000; // seconds elapsed
 
       // FPS sampling — update display every 500 ms
       frameCount++;
@@ -83,7 +91,8 @@ export default function App() {
 
       // ── Render ────────────────────────────────────────────────────────
       if (glRef.current) {
-        clearFrame(glRef.current); // fill with #050505 — only operation for now
+        clearFrame(glRef.current);                    // fill with #050505
+        particleRef.current?.draw(timeSec);           // single glowing particle
       }
 
       rafRef.current = requestAnimationFrame(loop);
@@ -101,6 +110,7 @@ export default function App() {
     // ── Cleanup ───────────────────────────────────────────────────────────
     return () => {
       cancelAnimationFrame(rafRef.current);
+      particleRef.current?.dispose();
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('webglcontextlost',     onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
