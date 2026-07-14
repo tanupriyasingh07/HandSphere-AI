@@ -12,15 +12,23 @@
 export const PARTICLE_VERT = /* glsl */ `#version 300 es
 
 // Per-vertex attributes — fed from the interleaved VBO each frame.
-in vec3  a_position; // base clip-space position (x, y, z)
+in vec3  a_position; // base world-space position (x, y, z)
 in float a_phase;    // per-particle phase offset [0, 2π]
 
 uniform float u_time;      // elapsed seconds — drives position drift
-uniform float u_pointSize; // total sprite size in pixels
+uniform float u_pointSize; // base sprite size in pixels (scaled by perspective)
 uniform float u_rotation;  // Y-axis rotation angle in radians (slow auto-spin)
 
 // Passed to fragment shader so back particles can be dimmed.
 out float v_depth;
+
+// ── Perspective camera ───────────────────────────────────────────────────────
+// Camera sits on the +Z axis looking toward the origin.
+// FOCAL = CAMERA_Z so the sphere centre projects at its original NDC scale.
+// With sphere radius 0.20, the nearest particle is at z = +0.20,
+// giving d_min = 0.50 — no risk of division by zero or z-inversion.
+const float CAMERA_Z = 0.70;
+const float FOCAL    = 0.70;
 
 void main() {
   // ── Very slow organic float ─────────────────────────────────────────────
@@ -30,7 +38,6 @@ void main() {
   pos.z += sin(u_time * 0.29 + a_phase * 1.37) * 0.007;
 
   // ── Y-axis rotation ─────────────────────────────────────────────────────
-  // Standard rotation matrix applied to (x, z); y is unchanged.
   float cosR = cos(u_rotation);
   float sinR = sin(u_rotation);
   vec3 rotPos;
@@ -38,12 +45,21 @@ void main() {
   rotPos.y =  pos.y;
   rotPos.z = -pos.x * sinR + pos.z * cosR;
 
-  // Pass raw rotated z to fragment shader for depth-based brightness.
-  // Multiply by 5 so the ±0.20 NDC sphere range maps to roughly ±1.
+  // ── Perspective projection ───────────────────────────────────────────────
+  // d   = distance from camera to this particle along Z.
+  // invD = perspective scale factor: larger closer to the camera.
+  //
+  //   Front particle (z = +0.20) → d = 0.50, scale = 1.40  (+40 % bigger)
+  //   Centre particle (z =  0.00) → d = 0.70, scale = 1.00  (reference)
+  //   Back  particle (z = -0.20) → d = 0.90, scale = 0.78  (-22 % smaller)
+  float d    = CAMERA_Z - rotPos.z;
+  float invD = FOCAL / d;  // = 1.0 at the sphere centre
+
+  // Pass depth for brightness shading: positive = toward camera = brighter.
   v_depth = rotPos.z * 5.0;
 
-  gl_Position  = vec4(rotPos, 1.0);
-  gl_PointSize = u_pointSize;
+  gl_Position  = vec4(rotPos.x * invD, rotPos.y * invD, 0.0, 1.0);
+  gl_PointSize = u_pointSize * invD;
 }
 `;
 
