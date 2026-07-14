@@ -5,17 +5,29 @@
  */
 
 // ── Particle shader ───────────────────────────────────────────────────────────
-// Renders a single gl.POINTS primitive.
-// The point sprite is 64 px so there is room for the soft glow halo;
-// the bright core lands at roughly 8–12 px of perceived radius.
+// Renders N points from a GPU-side position buffer.
+// Each vertex carries a base clip-space position and a per-particle phase
+// offset so the floating animation is desynchronised across the cluster.
 
 export const PARTICLE_VERT = /* glsl */ `#version 300 es
 
-// No per-vertex attributes — position is hard-coded to clip-space centre.
+// Per-vertex attributes — fed from the interleaved VBO each frame.
+in vec3  a_position; // base clip-space position (x, y, z)
+in float a_phase;    // per-particle phase offset [0, 2π]
+
+uniform float u_time;      // elapsed seconds — drives position drift
 uniform float u_pointSize; // total sprite size in pixels
 
 void main() {
-  gl_Position  = vec4(0.0, 0.0, 0.0, 1.0); // centre of the viewport
+  // ── Very slow organic float ─────────────────────────────────────────────
+  // Each particle drifts on a unique Lissajous-like path determined by its
+  // phase. Amplitudes are kept tiny so the cluster stays tight.
+  vec3 pos = a_position;
+  pos.x += cos(u_time * 0.38 + a_phase)        * 0.009;
+  pos.y += sin(u_time * 0.51 + a_phase)        * 0.013;
+  pos.z += sin(u_time * 0.29 + a_phase * 1.37) * 0.007;
+
+  gl_Position  = vec4(pos, 1.0);
   gl_PointSize = u_pointSize;
 }
 `;
@@ -23,32 +35,32 @@ void main() {
 export const PARTICLE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
-uniform float u_time; // elapsed seconds — drives the glow pulse
+uniform float u_time; // elapsed seconds — drives the brightness pulse
 
 out vec4 fragColor;
 
 void main() {
   // gl_PointCoord: (0,0) top-left → (1,1) bottom-right across the sprite.
-  // Remap to [-1, 1] so the centre is at (0,0).
+  // Remap to [-1, 1] so the origin is at the sprite centre.
   vec2  uv   = gl_PointCoord * 2.0 - 1.0;
   float dist = length(uv);
 
-  // Discard fragments outside the unit circle (square → circle).
+  // Discard fragments outside the unit circle (square → circle clip).
   if (dist > 1.0) discard;
 
   // Tight bright core — falls off very quickly.
   float core = exp(-dist * dist * 14.0);
 
-  // Wide soft halo — falls off gently for the glow bloom.
+  // Wide soft halo — gentle falloff for the glow bloom.
   float halo = exp(-dist * dist * 2.8) * 0.55;
 
   float brightness = core + halo;
 
-  // Subtle sinusoidal pulse — ±15 % over ~3.5 s period.
+  // Subtle sinusoidal pulse shared across all particles (±15 %, ~3.5 s period).
   float pulse = 0.85 + 0.15 * sin(u_time * 1.8);
   brightness *= pulse;
 
-  // Premultiplied-alpha style: colour = brightness, alpha = brightness.
+  // Premultiplied-alpha: colour = alpha = brightness.
   // Works correctly with additive blending (SRC_ALPHA, ONE).
   fragColor = vec4(brightness, brightness, brightness, brightness);
 }
