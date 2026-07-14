@@ -18,6 +18,7 @@ in float a_phase;    // per-particle phase offset [0, 2π]
 uniform float u_time;      // elapsed seconds — drives position drift
 uniform float u_pointSize; // base sprite size in pixels (scaled by perspective)
 uniform float u_rotation;  // Y-axis rotation angle in radians (slow auto-spin)
+uniform vec2  u_offset;    // screen-space translation for palm following [−1, 1]
 
 // Passed to fragment shader so back particles can be dimmed.
 out float v_depth;
@@ -58,7 +59,7 @@ void main() {
   // Pass depth for brightness shading: positive = toward camera = brighter.
   v_depth = rotPos.z * 5.0;
 
-  gl_Position  = vec4(rotPos.x * invD, rotPos.y * invD, 0.0, 1.0);
+  gl_Position  = vec4(rotPos.x * invD + u_offset.x, rotPos.y * invD + u_offset.y, 0.0, 1.0);
   gl_PointSize = u_pointSize * invD;
 }
 `;

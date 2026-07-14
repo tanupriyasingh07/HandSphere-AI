@@ -35,6 +35,8 @@ export default function App() {
   const handsRef    = useRef<Hands | null>(null);       // MediaPipe instance
   const sendingRef  = useRef(false);                    // prevent concurrent sends
   const resultsRef  = useRef<Results | null>(null);     // latest MP results
+  const palmTargetRef   = useRef({ x: 0, y: 0 }); // raw palm NDC target from MP
+  const sphereOffsetRef = useRef({ x: 0, y: 0 }); // lerped sphere position
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [fps,       setFps]       = useState(0);
@@ -113,10 +115,20 @@ export default function App() {
         fpsAccum   = 0;
       }
 
+      // ── Lerp sphere toward palm target ──────────────────────────────
+      // LERP_K = 0.10 → ~99 % convergence in ~45 frames (≈ 0.75 s at 60 fps).
+      // palmTargetRef resets to (0,0) when no hand is present so the sphere
+      // drifts back to centre automatically.
+      const LERP_K = 0.10;
+      const tgt = palmTargetRef.current;
+      const off = sphereOffsetRef.current;
+      off.x += (tgt.x - off.x) * LERP_K;
+      off.y += (tgt.y - off.y) * LERP_K;
+
       // ── WebGL: clear + particles ─────────────────────────────────────
       if (glRef.current) {
         clearFrame(glRef.current);
-        particleRef.current?.draw(timeSec);
+        particleRef.current?.draw(timeSec, off.x, off.y);
       }
 
       // ── MediaPipe: send frame (non-blocking, rate-limited by sendingRef)
@@ -185,7 +197,25 @@ export default function App() {
         // Initialise MediaPipe Hands after stream is live
         const tracker = createHandTracker((results: Results) => {
           resultsRef.current = results;
-          setHandCount(results.multiHandLandmarks?.length ?? 0);
+          const lmSets = results.multiHandLandmarks;
+          const count  = lmSets?.length ?? 0;
+          setHandCount(count);
+
+          if (count > 0) {
+            // Average wrist (0) + four knuckle bases (5, 9, 13, 17) for a
+            // stable palm centre that doesn't jump with finger movement.
+            const lm      = lmSets[0];
+            const indices = [0, 5, 9, 13, 17];
+            let sumX = 0, sumY = 0;
+            for (const i of indices) { sumX += lm[i].x; sumY += lm[i].y; }
+            const raw = sumX / indices.length;
+            const ray = sumY / indices.length;
+            // x: mirror to match CSS scaleX(-1) video, map [0,1] → NDC [-1,1]
+            // y: flip because MP y=0 is top but NDC y=+1 is top
+            palmTargetRef.current = { x: 1 - 2 * raw, y: 1 - 2 * ray };
+          } else {
+            palmTargetRef.current = { x: 0, y: 0 };
+          }
         });
         handsRef.current = tracker;
       } catch (err) {
