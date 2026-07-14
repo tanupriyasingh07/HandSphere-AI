@@ -1,11 +1,8 @@
 # HandSphere AI
-
 Interactive 3D particle sphere controlled by real-time hand tracking using **MediaPipe Hands** and **WebGL**.
 
 ## Overview
-
 HandSphere AI is an experimental browser-based AI interaction project where a 3D particle sphere responds to hand movements captured through a webcam.
-
 The project combines computer vision with GPU-accelerated graphics to create an interactive experience entirely inside the browser without external rendering engines.
 
 ## Features
@@ -60,7 +57,6 @@ HandSphere-AI/
 ## Current Progress
 
 ### Completed
-
 - WebGL particle renderer
 - 3D particle sphere
 - Particle glow shaders
@@ -73,7 +69,6 @@ HandSphere-AI/
 - Smooth motion interpolation
 
 ### Planned
-
 - Gesture recognition
 - Grab interaction
 - Pinch detection
@@ -109,7 +104,6 @@ npm run dev
 ```
 
 ## Future Improvements
-
 - Gesture-controlled UI
 - AI-powered interactions
 - Object manipulation
@@ -118,11 +112,8 @@ npm run dev
 - Better lighting and bloom
 
 ## Author
-
 **Tanupriya Singh**
-
 B.Tech CSE (Artificial Intelligence)
-
 Galgotias University
 
 GitHub:
