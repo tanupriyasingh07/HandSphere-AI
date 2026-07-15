@@ -40,12 +40,22 @@ export default function App() {
   const tiltTargetRef   = useRef(0);               // raw tilt angle from LM5–LM17 (rad)
   const sphereTiltRef   = useRef(0);               // lerped tilt angle
 
+  // ── Pinch-detection refs ──────────────────────────────────────────────────
+  // Distances are in MediaPipe normalised-landmark space (roughly 0–1).
+  // PINCH_CLOSE < PINCH_OPEN creates hysteresis so the state doesn't flicker.
+  const PINCH_CLOSE  = 0.06;   // enter-pinch threshold
+  const PINCH_OPEN   = 0.10;   // exit-pinch threshold  (gap = hysteresis band)
+  const PINCH_SMOOTH = 0.25;   // EMA alpha: higher = more responsive, noisier
+  const pinchDistRef   = useRef(1);      // EMA-smoothed thumb-index distance
+  const pinchActiveRef = useRef(false);  // current hysteretic pinch state
+
   // ── UI state ──────────────────────────────────────────────────────────────
   const [fps,       setFps]       = useState(0);
   const [glVersion, setGLVersion] = useState<string>('');
   const [ctxLost,   setCtxLost]   = useState(false);
   const [webcamOn,  setWebcamOn]  = useState(false);
   const [handCount, setHandCount] = useState(0);
+  const [gesture,   setGesture]   = useState<'OPEN' | 'PINCH'>('OPEN');
 
   // ── WebGL + render loop ───────────────────────────────────────────────────
   useEffect(() => {
@@ -226,9 +236,44 @@ export default function App() {
             const tdx  = Math.abs(lm5.x - lm17.x);
             const tdy  = lm17.y - lm5.y;
             tiltTargetRef.current = Math.atan2(tdy, tdx);
+
+            // ── Pinch detection ──────────────────────────────────────────
+            // Raw distance between thumb tip (LM4) and index tip (LM8).
+            const lm4 = lm[4];
+            const lm8 = lm[8];
+            const dx  = lm4.x - lm8.x;
+            const dy  = lm4.y - lm8.y;
+            const rawDist = Math.sqrt(dx * dx + dy * dy);
+
+            // EMA smoothing: damps single-frame noise while staying responsive.
+            pinchDistRef.current +=
+              PINCH_SMOOTH * (rawDist - pinchDistRef.current);
+
+            // Hysteresis: only cross state boundaries when the smoothed distance
+            // clearly crosses the close/open thresholds.
+            const smoothed = pinchDistRef.current;
+            if (!pinchActiveRef.current && smoothed < PINCH_CLOSE) {
+              pinchActiveRef.current = true;
+              setGesture('PINCH');
+              console.log('Pinch Started');
+            } else if (pinchActiveRef.current && smoothed > PINCH_OPEN) {
+              pinchActiveRef.current = false;
+              setGesture('OPEN');
+              console.log('Pinch Released');
+            } else if (pinchActiveRef.current) {
+              console.log('Pinching');
+            }
           } else {
             palmTargetRef.current = { x: 0, y: 0 };
             tiltTargetRef.current = 0;
+
+            // Reset pinch when hand leaves frame
+            if (pinchActiveRef.current) {
+              pinchActiveRef.current = false;
+              setGesture('OPEN');
+              console.log('Pinch Released');
+            }
+            pinchDistRef.current = 1;
           }
         });
         handsRef.current = tracker;
@@ -362,6 +407,17 @@ export default function App() {
           Tracking:&nbsp;
           <span style={{ color: trackingColor, fontWeight: 600 }}>
             {trackingLabel}
+          </span>
+        </div>
+        <div style={{ color: 'rgba(255,255,255,0.35)' }}>
+          Gesture:&nbsp;
+          <span style={{
+            color: gesture === 'PINCH'
+              ? 'rgba(255,220,80,0.90)'
+              : 'rgba(255,255,255,0.55)',
+            fontWeight: gesture === 'PINCH' ? 600 : 400,
+          }}>
+            {webcamOn ? gesture : '—'}
           </span>
         </div>
       </div>
