@@ -17,6 +17,7 @@ import { initWebGL, setViewport, clearFrame, type AnyGL } from '@/lib/webgl';
 import { createParticleRenderer, type ParticleRenderer }  from '@/lib/particle';
 import { createHandTracker, type Results }                 from '@/lib/handTracker';
 import { drawHands }                                       from '@/lib/handDraw';
+import { createBurstRenderer, type BurstRenderer }         from '@/lib/burst';
 import type { Hands }                                      from '@mediapipe/hands';
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
   const glRef       = useRef<AnyGL | null>(null);
   const rafRef      = useRef<number>(0);
   const particleRef = useRef<ParticleRenderer | null>(null);
+  const burstRef    = useRef<BurstRenderer | null>(null);
 
   // ── Webcam refs ───────────────────────────────────────────────────────────
   const videoRef  = useRef<HTMLVideoElement>(null);
@@ -39,6 +41,8 @@ export default function App() {
   const sphereOffsetRef = useRef({ x: 0, y: 0 }); // lerped sphere position
   const tiltTargetRef   = useRef(0);               // raw tilt angle from LM5–LM17 (rad)
   const sphereTiltRef   = useRef(0);               // lerped tilt angle
+  const pinchBlendRef   = useRef(0);               // 0 = white, 1 = warm gold; lerped each frame
+  const burstRequestRef = useRef(false);           // set on pinch-start; consumed in rAF loop
 
   // ── Pinch-detection refs ──────────────────────────────────────────────────
   // Distances are in MediaPipe normalised-landmark space (roughly 0–1).
@@ -71,6 +75,7 @@ export default function App() {
 
     // Particle renderer
     particleRef.current = createParticleRenderer(state.gl);
+    burstRef.current    = createBurstRenderer(state.gl);
 
     // Resize — keep WebGL canvas and 2D overlay in sync with viewport
     const resize = () => {
@@ -100,6 +105,7 @@ export default function App() {
       if (restored) {
         glRef.current       = restored.gl;
         particleRef.current = createParticleRenderer(restored.gl);
+        burstRef.current    = createBurstRenderer(restored.gl);
         resize();
         startLoop();
       }
@@ -127,6 +133,25 @@ export default function App() {
         fpsAccum   = 0;
       }
 
+      // ── Pinch colour + burst ─────────────────────────────────────────
+      // Consume any burst request queued by the results callback.
+      if (burstRequestRef.current) {
+        burstRef.current?.triggerBurst(timeSec);
+        burstRequestRef.current = false;
+      }
+
+      // Lerp pinch blend: 0 = white, 1 = warm gold [1.0, 0.62, 0.18].
+      // Alpha 0.04 → ~1.5 s full transition; slow enough to be smooth at 60 fps.
+      pinchBlendRef.current +=
+        ((pinchActiveRef.current ? 1 : 0) - pinchBlendRef.current) * 0.04;
+      const pb = pinchBlendRef.current;
+      const particleColor: [number, number, number] = [
+        1.0,
+        1.0 - pb * 0.38,   // 1.0 → 0.62
+        1.0 - pb * 0.82,   // 1.0 → 0.18
+      ];
+      const glowBoost = 1.0 + pb * 0.35; // 1.0 → 1.35 (35% more halo at peak pinch)
+
       // ── Lerp sphere toward palm target ──────────────────────────────
       // LERP_K = 0.10 → ~99 % convergence in ~45 frames (≈ 0.75 s at 60 fps).
       // palmTargetRef resets to (0,0) when no hand is present so the sphere
@@ -141,7 +166,8 @@ export default function App() {
       // ── WebGL: clear + particles ─────────────────────────────────────
       if (glRef.current) {
         clearFrame(glRef.current);
-        particleRef.current?.draw(timeSec, off.x, off.y, sphereTiltRef.current);
+        particleRef.current?.draw(timeSec, off.x, off.y, sphereTiltRef.current, particleColor, glowBoost);
+        burstRef.current?.draw(timeSec, off.x, off.y, particleColor);
       }
 
       // ── MediaPipe: send frame (non-blocking, rate-limited by sendingRef)
@@ -180,6 +206,7 @@ export default function App() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       particleRef.current?.dispose();
+      burstRef.current?.dispose();
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('webglcontextlost',     onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
@@ -256,6 +283,7 @@ export default function App() {
               pinchActiveRef.current = true;
               setGesture('PINCH');
               console.log('Pinch Started');
+              burstRequestRef.current = true;
             } else if (pinchActiveRef.current && smoothed > PINCH_OPEN) {
               pinchActiveRef.current = false;
               setGesture('OPEN');

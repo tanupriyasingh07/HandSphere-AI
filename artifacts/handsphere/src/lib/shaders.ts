@@ -78,7 +78,9 @@ void main() {
 export const PARTICLE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 
-uniform float u_time; // elapsed seconds — drives the brightness pulse
+uniform float u_time;      // elapsed seconds — drives the brightness pulse
+uniform vec3  u_color;     // tint: (1,1,1) = white; transitions to warm gold on pinch
+uniform float u_glowBoost; // halo intensity multiplier; 1.0 = normal
 
 // Depth from vertex shader: positive = toward viewer, negative = away.
 in float v_depth;
@@ -99,7 +101,8 @@ void main() {
 
   // Narrow dim halo — contained within the sprite, won't bleed into neighbours.
   // With 3000 additive particles the halo coefficient must stay very low.
-  float halo = exp(-dist * dist * 7.0) * 0.07;
+  // u_glowBoost scales halo only (core already bright enough); 1.0 during normal operation.
+  float halo = exp(-dist * dist * 7.0) * 0.07 * u_glowBoost;
 
   float brightness = core + halo;
 
@@ -114,8 +117,8 @@ void main() {
   float depthFactor  = 0.72 + 0.28 * depth;
   brightness        *= depthFactor;
 
-  // Premultiplied-alpha: colour = alpha = brightness.
-  // Works correctly with additive blending (SRC_ALPHA, ONE).
-  fragColor = vec4(brightness, brightness, brightness, brightness);
+  // Tinted premultiplied-alpha.  u_color = (1,1,1) → identical output to before.
+  // With additive blending (SRC_ALPHA, ONE):  dest += brightness * (brightness * color).
+  fragColor = vec4(brightness * u_color, brightness);
 }
 `;
