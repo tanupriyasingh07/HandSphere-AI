@@ -101,6 +101,9 @@ export interface ParticleRenderer {
     tilt: number,
     color: [number, number, number],
     glowBoost: number,
+    chargeLevel: number,  // 0 = orbit, 1 = compressed core
+    explodeAge: number,   // 0 = idle, 0→1 = explosion arc
+    neonBlend: number,    // 0 = base colour, 1 = per-particle neon rainbow
   ): void;
   /** Release all GPU resources. Call on unmount or context loss. */
   dispose(): void;
@@ -136,8 +139,11 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
   const uRotation  = getUniform(gl, program, 'u_rotation');
   const uOffset    = getUniform(gl, program, 'u_offset');
   const uTilt      = getUniform(gl, program, 'u_tilt');
-  const uColor     = getUniform(gl, program, 'u_color');
-  const uGlowBoost = getUniform(gl, program, 'u_glowBoost');
+  const uColor       = getUniform(gl, program, 'u_color');
+  const uGlowBoost   = getUniform(gl, program, 'u_glowBoost');
+  const uChargeLevel = getUniform(gl, program, 'u_chargeLevel');
+  const uExplodeAge  = getUniform(gl, program, 'u_explodeAge');
+  const uNeonBlend   = getUniform(gl, program, 'u_neonBlend');
 
   // ── VBO — interleaved cluster geometry ───────────────────────────────────
   const clusterData = buildCluster(PARTICLE_COUNT);
@@ -182,16 +188,22 @@ export function createParticleRenderer(gl: AnyGL): ParticleRenderer | null {
     tilt: number,
     color: [number, number, number],
     glowBoost: number,
+    chargeLevel: number,
+    explodeAge: number,
+    neonBlend: number,
   ): void {
     gl.useProgram(program);
 
-    if (uTime)      gl.uniform1f(uTime,      timeSeconds);
-    if (uPointSize) gl.uniform1f(uPointSize, SPRITE_SIZE);
-    if (uRotation)  gl.uniform1f(uRotation,  timeSeconds * ROTATION_SPEED);
-    if (uOffset)    gl.uniform2f(uOffset,    offsetX, offsetY);
-    if (uTilt)      gl.uniform1f(uTilt,      tilt);
-    if (uColor)     gl.uniform3fv(uColor,    color);
-    if (uGlowBoost) gl.uniform1f(uGlowBoost, glowBoost);
+    if (uTime)        gl.uniform1f(uTime,        timeSeconds);
+    if (uPointSize)   gl.uniform1f(uPointSize,   SPRITE_SIZE);
+    if (uRotation)    gl.uniform1f(uRotation,    timeSeconds * ROTATION_SPEED);
+    if (uOffset)      gl.uniform2f(uOffset,      offsetX, offsetY);
+    if (uTilt)        gl.uniform1f(uTilt,        tilt);
+    if (uColor)       gl.uniform3fv(uColor,      color);
+    if (uGlowBoost)   gl.uniform1f(uGlowBoost,   glowBoost);
+    if (uChargeLevel) gl.uniform1f(uChargeLevel, chargeLevel);
+    if (uExplodeAge)  gl.uniform1f(uExplodeAge,  explodeAge);
+    if (uNeonBlend)   gl.uniform1f(uNeonBlend,   neonBlend);
 
     gl2.bindVertexArray(vao);
     gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT); // single draw call

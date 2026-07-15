@@ -17,7 +17,7 @@ import { initWebGL, setViewport, clearFrame, type AnyGL } from '@/lib/webgl';
 import { createParticleRenderer, type ParticleRenderer }  from '@/lib/particle';
 import { createHandTracker, type Results }                 from '@/lib/handTracker';
 import { drawHands }                                       from '@/lib/handDraw';
-import { createBurstRenderer, type BurstRenderer }         from '@/lib/burst';
+
 import type { Hands }                                      from '@mediapipe/hands';
 
 export default function App() {
@@ -26,7 +26,7 @@ export default function App() {
   const glRef       = useRef<AnyGL | null>(null);
   const rafRef      = useRef<number>(0);
   const particleRef = useRef<ParticleRenderer | null>(null);
-  const burstRef    = useRef<BurstRenderer | null>(null);
+
 
   // ── Webcam refs ───────────────────────────────────────────────────────────
   const videoRef  = useRef<HTMLVideoElement>(null);
@@ -41,15 +41,20 @@ export default function App() {
   const sphereOffsetRef = useRef({ x: 0, y: 0 }); // lerped sphere position
   const tiltTargetRef   = useRef(0);               // raw tilt angle from LM5–LM17 (rad)
   const sphereTiltRef   = useRef(0);               // lerped tilt angle
-  const pinchBlendRef   = useRef(0);               // 0 = white, 1 = warm gold; lerped each frame
-  const burstRequestRef = useRef(false);           // set on pinch-start; consumed in rAF loop
+  // ── Energy-system refs (ORBIT → CHARGE → EXPLODE → ORBIT state machine) ──
+  const energyStateRef = useRef<'ORBIT' | 'CHARGE' | 'EXPLODE'>('ORBIT');
+  const chargeRef      = useRef(0);  // 0→1 lerped; drives compression + colour
+  const explodeAgeRef  = useRef(0);  // raw seconds since explosion fired (0 when idle)
+  const colorPhaseRef  = useRef(0);  // colour-cycle position; advances during CHARGE
+  const neonBlendRef   = useRef(0);  // 0→1 lerped; blends per-particle neon into frag
 
   // ── Pinch-detection refs ──────────────────────────────────────────────────
   // Distances are in MediaPipe normalised-landmark space (roughly 0–1).
   // PINCH_CLOSE < PINCH_OPEN creates hysteresis so the state doesn't flicker.
-  const PINCH_CLOSE  = 0.06;   // enter-pinch threshold
-  const PINCH_OPEN   = 0.10;   // exit-pinch threshold  (gap = hysteresis band)
-  const PINCH_SMOOTH = 0.25;   // EMA alpha: higher = more responsive, noisier
+  const PINCH_CLOSE      = 0.06;  // enter-pinch threshold
+  const PINCH_OPEN       = 0.10;  // exit-pinch threshold  (gap = hysteresis band)
+  const PINCH_SMOOTH     = 0.25;  // EMA alpha: higher = more responsive, noisier
+  const EXPLODE_DURATION = 1.5;   // seconds for the full explosion + return arc
   const pinchDistRef   = useRef(1);      // EMA-smoothed thumb-index distance
   const pinchActiveRef = useRef(false);  // current hysteretic pinch state
 
@@ -75,7 +80,6 @@ export default function App() {
 
     // Particle renderer
     particleRef.current = createParticleRenderer(state.gl);
-    burstRef.current    = createBurstRenderer(state.gl);
 
     // Resize — keep WebGL canvas and 2D overlay in sync with viewport
     const resize = () => {
@@ -105,7 +109,6 @@ export default function App() {
       if (restored) {
         glRef.current       = restored.gl;
         particleRef.current = createParticleRenderer(restored.gl);
-        burstRef.current    = createBurstRenderer(restored.gl);
         resize();
         startLoop();
       }
@@ -133,24 +136,67 @@ export default function App() {
         fpsAccum   = 0;
       }
 
-      // ── Pinch colour + burst ─────────────────────────────────────────
-      // Consume any burst request queued by the results callback.
-      if (burstRequestRef.current) {
-        burstRef.current?.triggerBurst(timeSec);
-        burstRequestRef.current = false;
+      // ── Energy system: ORBIT → CHARGE → EXPLODE → ORBIT ─────────────
+      const dt = delta / 1000; // frame delta in seconds
+
+      // Advance explosion timer; automatically return to ORBIT when complete.
+      if (energyStateRef.current === 'EXPLODE') {
+        explodeAgeRef.current += dt;
+        if (explodeAgeRef.current >= EXPLODE_DURATION) {
+          energyStateRef.current = 'ORBIT';
+          explodeAgeRef.current  = 0;
+        }
       }
 
-      // Lerp pinch blend: 0 = white, 1 = warm gold [1.0, 0.62, 0.18].
-      // Alpha 0.04 → ~1.5 s full transition; slow enough to be smooth at 60 fps.
-      pinchBlendRef.current +=
-        ((pinchActiveRef.current ? 1 : 0) - pinchBlendRef.current) * 0.04;
-      const pb = pinchBlendRef.current;
-      const particleColor: [number, number, number] = [
-        1.0,
-        1.0 - pb * 0.38,   // 1.0 → 0.62
-        1.0 - pb * 0.82,   // 1.0 → 0.18
+      // Charge level: lerps up slowly during CHARGE (builds tension), drops
+      // quickly during EXPLODE so the compressed core "springs open".
+      const chargeTarget = energyStateRef.current === 'CHARGE' ? 1 : 0;
+      const chargeK      = energyStateRef.current === 'EXPLODE' ? 0.12 : 0.04;
+      chargeRef.current += (chargeTarget - chargeRef.current) * chargeK;
+      const cl = chargeRef.current; // convenience alias used below + in draw()
+
+      // Neon blend: ramps up fast when explosion fires, fades out afterward.
+      const neonTarget = energyStateRef.current === 'EXPLODE' ? 1 : 0;
+      const neonK      = energyStateRef.current === 'EXPLODE' ? 0.15 : 0.06;
+      neonBlendRef.current += (neonTarget - neonBlendRef.current) * neonK;
+
+      // Colour cycle advances during CHARGE and speeds up as charge builds.
+      // Stops advancing during EXPLODE/ORBIT so it resumes naturally next time.
+      if (energyStateRef.current === 'CHARGE') {
+        colorPhaseRef.current += dt * (0.5 + cl * 1.8);
+      }
+
+      // 4-stop colour cycle: white → electric blue → deep purple → warm orange → white
+      const cp = ((colorPhaseRef.current % 1) + 1) % 1;
+      const STOPS: [number, number, number][] = [
+        [1.00, 1.00, 1.00],  // 0.00 white
+        [0.20, 0.50, 1.00],  // 0.25 electric blue
+        [0.70, 0.10, 1.00],  // 0.50 deep purple
+        [1.00, 0.45, 0.05],  // 0.75 warm orange
+        [1.00, 1.00, 1.00],  // 1.00 white (wraps)
       ];
-      const glowBoost = 1.0 + pb * 0.35; // 1.0 → 1.35 (35% more halo at peak pinch)
+      const si = Math.min(Math.floor(cp * 4), 3);
+      const sf = cp * 4 - si;
+      const sa = STOPS[si], sb = STOPS[si + 1];
+      const cycleColor: [number, number, number] = [
+        sa[0] + (sb[0] - sa[0]) * sf,
+        sa[1] + (sb[1] - sa[1]) * sf,
+        sa[2] + (sb[2] - sa[2]) * sf,
+      ];
+
+      // Interpolate from white toward the current cycle colour as charge grows.
+      const particleColor: [number, number, number] = [
+        1 + (cycleColor[0] - 1) * cl,
+        1 + (cycleColor[1] - 1) * cl,
+        1 + (cycleColor[2] - 1) * cl,
+      ];
+      // Glow grows strongly with charge; extra brightness during explosion.
+      const glowBoost = 1.0 + cl * 2.5 + neonBlendRef.current * 1.2;
+
+      // Normalised explosion age for the shader (0 outside explosion phase).
+      const explodeAge = energyStateRef.current === 'EXPLODE'
+        ? Math.min(explodeAgeRef.current / EXPLODE_DURATION, 1.0)
+        : 0;
 
       // ── Lerp sphere toward palm target ──────────────────────────────
       // LERP_K = 0.10 → ~99 % convergence in ~45 frames (≈ 0.75 s at 60 fps).
@@ -166,8 +212,11 @@ export default function App() {
       // ── WebGL: clear + particles ─────────────────────────────────────
       if (glRef.current) {
         clearFrame(glRef.current);
-        particleRef.current?.draw(timeSec, off.x, off.y, sphereTiltRef.current, particleColor, glowBoost);
-        burstRef.current?.draw(timeSec, off.x, off.y, particleColor);
+        particleRef.current?.draw(
+          timeSec, off.x, off.y, sphereTiltRef.current,
+          particleColor, glowBoost,
+          cl, explodeAge, neonBlendRef.current,
+        );
       }
 
       // ── MediaPipe: send frame (non-blocking, rate-limited by sendingRef)
@@ -206,7 +255,6 @@ export default function App() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       particleRef.current?.dispose();
-      burstRef.current?.dispose();
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('webglcontextlost',     onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
@@ -283,11 +331,15 @@ export default function App() {
               pinchActiveRef.current = true;
               setGesture('PINCH');
               console.log('Pinch Started');
-              burstRequestRef.current = true;
+              energyStateRef.current = 'CHARGE';
             } else if (pinchActiveRef.current && smoothed > PINCH_OPEN) {
               pinchActiveRef.current = false;
               setGesture('OPEN');
               console.log('Pinch Released');
+              // Trigger explosion only if we were in the charge phase.
+              energyStateRef.current = energyStateRef.current === 'CHARGE'
+                ? 'EXPLODE' : 'ORBIT';
+              if (energyStateRef.current === 'EXPLODE') explodeAgeRef.current = 0;
             } else if (pinchActiveRef.current) {
               console.log('Pinching');
             }
@@ -295,11 +347,14 @@ export default function App() {
             palmTargetRef.current = { x: 0, y: 0 };
             tiltTargetRef.current = 0;
 
-            // Reset pinch when hand leaves frame
+            // Hand left frame — treat as pinch release; trigger explosion if charging.
             if (pinchActiveRef.current) {
               pinchActiveRef.current = false;
               setGesture('OPEN');
               console.log('Pinch Released');
+              energyStateRef.current = energyStateRef.current === 'CHARGE'
+                ? 'EXPLODE' : 'ORBIT';
+              if (energyStateRef.current === 'EXPLODE') explodeAgeRef.current = 0;
             }
             pinchDistRef.current = 1;
           }
